@@ -20,9 +20,10 @@ $ cargo install --path=.
 
 main.smc
 ```smartconf
-foo: 1
-bar: 2
-baz: 3
+foo: 'oo'
+hsa: 'sbaa'
+bar: `bar`
+baz: "baz"
 ```
 
 ```console
@@ -32,9 +33,10 @@ $ smartconf --format json -o main.json main.smc
 main.json
 ```
 {
-    "foo": 1,
-    "bar": 2,
-    "baz": 3,
+    "foo": "oo",
+    "hsa": "sbaa",
+    "bar": "bar",
+    "baz": "baz",
 }
 ```
 
