@@ -27,7 +27,7 @@ baz: "baz"
 ```
 
 ```console
-$ smartconf --format json -o main.json main.smc
+$ smartconf --format json -o main.json main.smf
 ```
 
 main.json

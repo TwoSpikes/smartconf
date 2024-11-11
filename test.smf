@@ -1,4 +1,4 @@
 foo: 'oo'
-ochko: 'govno'
+ochko: 'govno\\'
 bar: `bar`
 baz: "baz"
