@@ -1,3 +1,5 @@
+use core::prelude;
+
 const PROGRAM_NAME: &str = "smartconf";
 
 macro_rules! usage {
@@ -140,10 +142,10 @@ struct Loc {
 
 #[derive(Debug)]
 enum TokValue {
-    #[allow(non_camel_case_types)] IDENTIFIER(String),
-    #[allow(non_camel_case_types)] SPECCHAR(String),
-    #[allow(non_camel_case_types)] STRING(String),
-    #[allow(non_camel_case_types)] DOUBLE_QUOTE_STRING(String),
+    #[allow(non_camel_case_types)] IDENTIFIER { value: String },
+    #[allow(non_camel_case_types)] SPECCHAR { value: String },
+    #[allow(non_camel_case_types)] STRING { value: String, quote_type: char },
+    #[allow(non_camel_case_types)] ONE_LINE_COMMENT,
 }
 
 #[derive(Debug)]
@@ -181,11 +183,14 @@ fn lex(program_name: String, config: Config, input: String) -> Vec<Tok> {
         };
     }
 
+    #[derive(Debug)]
     enum State {
         IDENTIFIER,
         SPECCHAR,
         STRING { quote_type: char, escaping: bool },
         NOP,
+        WHITESPACE,
+        ONELINECOMMENT,
     }
     let mut state = State::IDENTIFIER;
     let mut result = Vec::new();
@@ -200,6 +205,43 @@ fn lex(program_name: String, config: Config, input: String) -> Vec<Tok> {
         column_number: config.starting_column_number,
     };
     let mut current_text = String::new();
+    macro_rules! add_tok {
+        () => {
+            match state {
+                State::NOP => {
+                    None
+                },
+                State::ONELINECOMMENT => {
+                    None
+                },
+                _ => {
+                    let value = match state {
+                        State::SPECCHAR => {
+                            TokValue::SPECCHAR {
+                                value: current_text.clone(),
+                            }
+                        },
+                        State::IDENTIFIER => {
+                            TokValue::IDENTIFIER {
+                                value: current_text.clone(),
+                            }
+                        },
+                        State::STRING { quote_type, escaping } => {
+                            TokValue::STRING {
+                                value: current_text.clone(),
+                                quote_type,
+                            }
+                        },
+                        _ => unreachable!(),
+                    };
+                    Some(Tok {
+                        loc: prev_loc.clone(),
+                        value,
+                    })
+                },
+            }
+        };
+    }
     for c in input.chars() {
         match state {
             State::STRING { quote_type, escaping } => {
@@ -231,14 +273,16 @@ fn lex(program_name: String, config: Config, input: String) -> Vec<Tok> {
                 }
                 if c == quote_type {
                     lexer_loc_warning!(loc, "current_text: {} ({}: {})", current_text, prev_loc.line_number, prev_loc.column_number);
-                    let tok = Tok {
-                        loc: prev_loc,
-                        value: TokValue::STRING(current_text),
-                    };
-                    state = State::NOP;
                     prev_loc = loc.clone();
+                    let tok = add_tok!();
+                    state = State::NOP;
                     current_text = String::new();
-                    result.push(tok);
+                    match tok {
+                        Some(tok) => {
+                            result.push(tok);
+                        },
+                        None => {},
+                    }
                     continue;
                 }
                 current_text.push(c);
@@ -253,30 +297,24 @@ fn lex(program_name: String, config: Config, input: String) -> Vec<Tok> {
         {
             loc.line_number += 1;
             loc.column_number = config.starting_column_number - 1;
-            if !matches!(state, State::NOP) {
+            if !matches!(state, State::NOP) && !current_text.is_empty() {
                 eprintln!("{}: {}: ({}: {}): adding newline: \"{}\"", loc.line_number, loc.column_number, prev_loc.line_number, prev_loc.column_number, current_text);
-                let tok = Tok {
-                    loc: prev_loc,
-                    value: match state {
-                        State::IDENTIFIER => {
-                            TokValue::IDENTIFIER(current_text)
-                        },
-                        State::SPECCHAR => {
-                            TokValue::SPECCHAR(current_text)
-                        },
-                        _ => unreachable!(),
-                    },
-                };
-                prev_loc = loc.clone();
+                let tok = add_tok!();
                 prev_loc.column_number += 1;
                 current_text = String::new();
-                result.push(tok);
+                match tok {
+                    Some(tok) => {
+                        result.push(tok);
+                    }
+                    None => {},
+                }
                 state = State::SPECCHAR;
-                continue;
             }
+            prev_loc = loc.clone();
+            continue;
         }
-        if matches!(state, State::NOP) {
-            state = State::IDENTIFIER;
+        if !current_text.is_empty() && matches!(state, State::NOP) {
+            state = State::SPECCHAR;
             prev_loc = loc.clone();
             prev_loc.column_number += 1;
             continue;
@@ -289,38 +327,38 @@ fn lex(program_name: String, config: Config, input: String) -> Vec<Tok> {
             || c == '-'
             || c == '_'
         {
-            if !current_text.is_empty() && !matches!(state, State::IDENTIFIER) {
-                eprintln!("{}: {}: ({}: {}): adding identifier: \"{}\"", loc.line_number, loc.column_number, prev_loc.line_number, prev_loc.column_number, current_text);
-                let tok = Tok {
-                    loc: prev_loc,
-                    value: TokValue::SPECCHAR(current_text),
-                };
+            if !matches!(state, State::IDENTIFIER) {
+                if !current_text.is_empty() {
+                    eprintln!("{}: {}: ({}: {}): adding identifier: \"{}\"", loc.line_number, loc.column_number, prev_loc.line_number, prev_loc.column_number, current_text);
+                    let tok = add_tok!();
+                    current_text = String::new();
+                    match tok {
+                        Some(tok) => {
+                            result.push(tok);
+                        }
+                        None => {},
+                    }
+                }
                 prev_loc = loc.clone();
-                current_text = String::new();
-                result.push(tok);
             }
             state = State::IDENTIFIER;
             current_text.push(c);
             continue;
         }
         if c.is_whitespace() {
-            eprintln!("{}: {}: ({}: {}): adding whitespace: \"{}\"", loc.line_number, loc.column_number, prev_loc.line_number, prev_loc.column_number, current_text);
-            let tok = Tok {
-                loc: prev_loc,
-                value: match state {
-                    State::SPECCHAR => {
-                        TokValue::SPECCHAR(current_text)
+            if !current_text.is_empty() {
+                eprintln!("{}: {}: ({}: {}): adding whitespace: \"{}\"", loc.line_number, loc.column_number, prev_loc.line_number, prev_loc.column_number, current_text);
+                let tok = add_tok!();
+                current_text = String::new();
+                match tok {
+                    Some(tok) => {
+                        result.push(tok);
                     },
-                    State::IDENTIFIER => {
-                        TokValue::IDENTIFIER(current_text)
-                    },
-                    _ => unreachable!(),
-                },
-            };
+                    None => {},
+                }
+            }
             prev_loc = loc.clone();
-            prev_loc.column_number += 1;
-            current_text = String::new();
-            result.push(tok);
+            state = State::WHITESPACE;
             continue;
         }
         if false
@@ -330,21 +368,15 @@ fn lex(program_name: String, config: Config, input: String) -> Vec<Tok> {
         {
             if !current_text.is_empty() {
                 eprintln!("{}: {}: ({}: {}): adding string: \"{}\"", loc.line_number, loc.column_number, prev_loc.line_number, prev_loc.column_number, current_text);
-                let tok = Tok {
-                    loc: prev_loc,
-                    value: match state {
-                        State::SPECCHAR => {
-                            TokValue::SPECCHAR(current_text)
-                        },
-                        State::IDENTIFIER => {
-                            TokValue::IDENTIFIER(current_text)
-                        },
-                        _ => unreachable!(),
-                    },
-                };
+                let tok = add_tok!();
                 prev_loc = loc.clone();
                 current_text = String::new();
-                result.push(tok);
+                match tok {
+                    Some(tok) => {
+                        result.push(tok);
+                    }
+                    None => {},
+                }
             }
             state = State::STRING {
                 quote_type: c,
@@ -352,26 +384,21 @@ fn lex(program_name: String, config: Config, input: String) -> Vec<Tok> {
             };
             continue;
         }
-        if !current_text.is_empty() {
-            eprintln!("{}: {}: ({}: {}): adding specchar: \"{}\"", loc.line_number, loc.column_number, prev_loc.line_number, prev_loc.column_number, current_text);
-            let tok = Tok {
-                loc: prev_loc,
-                value: match state {
-                    State::SPECCHAR => {
-                        TokValue::SPECCHAR(current_text)
-                    },
-                    State::IDENTIFIER => {
-                        TokValue::IDENTIFIER(current_text)
-                    },
-                    _ => unreachable!(),
-                },
-            };
-            prev_loc = loc.clone();
-            current_text = String::new();
-            result.push(tok);
+        eprintln!("{}: {}: ({}: {}): adding specchar: \"{}\"", loc.line_number, loc.column_number, prev_loc.line_number, prev_loc.column_number, current_text);
+        let mut tok = add_tok!();
+        if current_text.is_empty() {
+            tok = None;
+        }
+        current_text = String::new();
+        match tok {
+            Some(tok) => {
+                result.push(tok);
+            }
+            None => {},
         }
         state = State::SPECCHAR;
         current_text.push(c);
+        prev_loc = loc.clone();
     }
     return result;
 }
@@ -411,10 +438,12 @@ fn generate_hashmap(program_name: String, config: Config) -> ::std::collections:
         };
     }
 
+    #[derive(Debug, Clone)]
     enum State {
-        KEY,
-        COLON{key: String},
-        VALUE{key: String},
+        #[allow(non_camel_case_types)] KEY,
+        #[allow(non_camel_case_types)] COLON { key: String },
+        #[allow(non_camel_case_types)] VALUE { key: String },
+        #[allow(non_camel_case_types)] ONE_LINE_COMMENT { line_number: usize, previous_state: Box<State> },
     }
     let mut state = State::KEY;
     let input_file = match ::std::fs::read_to_string(config.input_file_name.clone()) {
@@ -429,46 +458,87 @@ fn generate_hashmap(program_name: String, config: Config) -> ::std::collections:
     eprintln!("{:#?}", lexed);
     for tok in lexed {
         eprintln!("{}: {}: {}: \"{:?}\"", tok.loc.filename, tok.loc.line_number, tok.loc.column_number, tok.value);
-        match state {
-            State::KEY => {
-                match tok.value {
-                    TokValue::IDENTIFIER(identifier) => {
-                        state = State::COLON { key: identifier };
-                    }
-                    _ => {
-                        generator_loc_error!(tok, "Expected identifier");
-                        ::std::process::exit(3);
-                    }
+        match state.clone() {
+            State::ONE_LINE_COMMENT { line_number, previous_state } => {
+                if tok.loc.line_number != line_number {
+                    state = *previous_state;
+                } else {
+                    continue;
                 }
             },
-            State::COLON { key } => {
-                match tok.value {
-                    TokValue::SPECCHAR(specchar) => {
-                        if specchar == ":" {
-                            state = State::VALUE { key };
-                            continue;
-                        }
-                        generator_loc_error!(tok, "Expected `:`, found {}", specchar);
-                        ::std::process::exit(3);
-                    }
-                    _ => {
-                        generator_loc_error!(tok, "Expected specchar");
-                        ::std::process::exit(3);
-                    }
-                }
-            },
-            State::VALUE { ref key } => {
-                match tok.value {
-                    TokValue::STRING(text) => {
-                        result.insert(key.to_string(), Item::Text(text));
-                        state = State::KEY;
+            _ => {},
+        }
+        let specchar_good: bool;
+        match tok.value {
+            TokValue::SPECCHAR { ref value } => {
+                match value.as_str() {
+                    "#" => {
+                        state = State::ONE_LINE_COMMENT {
+                            line_number: tok.loc.line_number,
+                            previous_state: Box::new(state),
+                        };
+                        specchar_good = false;
                     },
                     _ => {
-                        generator_loc_error!(tok, "Expected string");
-                        ::std::process::exit(3);
-                    }
+                        specchar_good = true;
+
+                    },
                 }
             },
+            _ => {
+                specchar_good = true;
+            }
+        }
+        if specchar_good {
+            match state {
+                State::KEY => {
+                    match tok.value {
+                        TokValue::IDENTIFIER {
+                            value: identifier,
+                        } => {
+                            state = State::COLON { key: identifier };
+                        }
+                        _ => {
+                            generator_loc_error!(tok, "Expected identifier");
+                            ::std::process::exit(3);
+                        }
+                    }
+                },
+                State::COLON { key } => {
+                    match tok.value {
+                        TokValue::SPECCHAR {
+                            value: specchar
+                        } => {
+                            if specchar == ":" {
+                                state = State::VALUE { key };
+                                continue;
+                            }
+                            generator_loc_error!(tok, "Expected `:`, found {}", specchar);
+                            ::std::process::exit(3);
+                        }
+                        _ => {
+                            generator_loc_error!(tok, "Expected specchar");
+                            ::std::process::exit(3);
+                        }
+                    }
+                },
+                State::VALUE { ref key } => {
+                    match tok.value {
+                        TokValue::STRING {
+                            value: text,
+                            quote_type: _,
+                        } => {
+                            result.insert(key.to_string(), Item::Text(text));
+                            state = State::KEY;
+                        },
+                        _ => {
+                            generator_loc_error!(tok, "Expected string");
+                            ::std::process::exit(3);
+                        }
+                    }
+                },
+                _ => unreachable!(),
+            }
         }
     }
     return result;
@@ -476,7 +546,7 @@ fn generate_hashmap(program_name: String, config: Config) -> ::std::collections:
 
 fn generate_output(program_name: String, hashmap: ::std::collections::HashMap<String, Item>) -> String {
     eprintln!("hashmap: {:#?}", hashmap);
-    return String::from("lol");
+    todo!();
 }
 
 fn main() {

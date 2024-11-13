@@ -22,6 +22,7 @@ main.smc
 ```smartconf
 foo: 'oo'
 hsa: 'sbaa'
+# this is a comment
 bar: `bar`
 baz: "baz"
 ```

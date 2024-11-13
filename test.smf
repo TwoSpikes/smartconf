@@ -1,4 +1,7 @@
 foo: 'oo'
-ochko: 'govno\\'
+hsa: 'sbaa'
+# this is a comment
+# this is a comment
+# this is a comment
 bar: `bar`
 baz: "baz"
