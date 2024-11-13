@@ -18,7 +18,7 @@ $ cargo install --path=.
 
 # Usage
 
-main.smc
+main.smf
 ```smartconf
 foo: 'oo'
 hsa: 'sbaa'
