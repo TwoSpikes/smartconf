@@ -15,6 +15,13 @@ macro_rules! options {
     () => {
         eprintln!("Options (case sensitive):");
         eprintln!("--help -h       Show this help message");
+        eprintln!("--format FORMAT");
+        eprintln!("                Set format to FORMAT.");
+        eprintln!("                Available formats listed below.");
+        eprintln!("--variable-name NAME");
+        eprintln!("-N NAME");
+        eprintln!("                Set variable name to NAME");
+        eprintln!("                (see README.md for details)");
     };
 }
 
@@ -22,6 +29,7 @@ macro_rules! formats {
     () => {
         eprintln!("Aviable formats:");
         eprintln!("vim             Vimscript file");
+        eprintln!("json            JavaScript object notation");
     };
 }
 
@@ -106,6 +114,7 @@ fn repr(config: &Config, s: String) -> String {
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Format {
     Vim,
+    JSON,
 }
 
 
@@ -241,11 +250,16 @@ fn parse_cla(program_name: String, mut args: ::std::env::Args) -> Config {
                             },
                             "help" => {
                                 result.help = true;
-                            }
+                            },
+                            "variable-name" => {
+                                state = State::OPTION_ARGUMENT {
+                                    option: CLAOptionWithArgument::VariableName,
+                                };
+                            },
                             _ => {
                                 cla_parser_error!("Unknown long option");
                                 ::std::process::exit(1);
-                            }
+                            },
                         }
                         handle_short_options!(options);
                     },
@@ -256,6 +270,7 @@ fn parse_cla(program_name: String, mut args: ::std::env::Args) -> Config {
                     CLAOptionWithArgument::Format => {
                         result.format = match arg.as_str() {
                             "vim" => Format::Vim,
+                            "json" => Format::JSON,
                             _ => {
                                 cla_parser_error!("Unknown format: \"{}\"", arg);
                                 eprintln!();
@@ -267,6 +282,7 @@ fn parse_cla(program_name: String, mut args: ::std::env::Args) -> Config {
                     },
                     CLAOptionWithArgument::VariableName => {
                         result.variable_name = arg;
+                        state = State::NONE;
                     },
                     _ => unreachable!(),
                 }
@@ -766,14 +782,27 @@ fn generate_output(program_name: String, hashmap: ::std::collections::HashMap<St
         Format::Vim => {
             result += &format!("let g:{} = {{\n", config.variable_name);
         },
+        Format::JSON => {
+            result += &format!("{{\n");
+        },
     }
 
     for key in hashmap.keys() {
-        result += &format!("    '{}': \"{}\",\n", key, repr(&config, hashmap[key].to_string()));
+        match config.format {
+            Format::Vim => {
+                result += &format!("\\    '{}': \"{}\",\n", key, repr(&config, hashmap[key].to_string()));
+            },
+            Format::JSON => {
+                result += &format!("    \"{}\": \"{}\",\n", key, repr(&config, hashmap[key].to_string()));
+            },
+        }
     }
 
     match config.format {
         Format::Vim => {
+            result += &format!("\\}}\n");
+        },
+        Format::JSON => {
             result += &format!("}}\n");
         },
     }
