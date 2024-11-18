@@ -28,18 +28,15 @@ baz: "baz"
 ```
 
 ```console
-$ smartconf --format json -o main.json main.smf
+$ smartconf --format vim main.smf > main.vim
 ```
 
-main.json
+main.vim
 ```
-{
-    "foo": "oo",
-    "hsa": "sbaa",
-    "bar": "bar",
-    "baz": "baz",
+let g:config = {
+    'foo': "oo",
+    'hsa': "sbaa",
+    'bar': "bar",
+    'baz': "baz",
 }
 ```
-
-> [!Warning]
-> It currently can not even do this thing shown above

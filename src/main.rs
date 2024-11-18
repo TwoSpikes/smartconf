@@ -11,10 +11,27 @@ macro_rules! usage {
     };
 }
 
+macro_rules! options {
+    () => {
+        eprintln!("Options (case sensitive):");
+        eprintln!("--help -h       Show this help message");
+    };
+}
+
+macro_rules! formats {
+    () => {
+        eprintln!("Aviable formats:");
+        eprintln!("vim             Vimscript file");
+    };
+}
+
 macro_rules! help {
     ($program_name: expr) => {
         usage!($program_name);
-        todo!();
+        eprintln!();
+        options!();
+        eprintln!();
+        formats!();
     };
 }
 
@@ -32,11 +49,75 @@ macro_rules! warning {
     };
 }
 
+fn repr(config: &Config, s: String) -> String {
+    #[allow(unused_macros)]
+    macro_rules! repr_error {
+        ($($msg: expr),+) => {
+            error!("repr: {}", format!($($msg,)+));
+        };
+    }
+
+    #[allow(unused_macros)]
+    macro_rules! repr_warning {
+        ($($msg: expr),+) => {
+            warning!("repr: {}", format!($($msg,)+));
+        };
+    }
+
+    enum State {
+        #[allow(non_camel_case_types)] NONE,
+        #[allow(non_camel_case_types)] BACKSLASH,
+    }
+    let mut state = State::NONE;
+    let mut result = String::new();
+    for c in s.chars() {
+        match state {
+            State::NONE => {
+                if c == '\\' {
+                    state = State::BACKSLASH;
+                    continue;
+                }
+                result.push(c);
+            },
+            State::BACKSLASH => {
+                result.push(match c {
+                    '\\' => '\\',
+                    'n' => '\n',
+                    't' => '\t',
+                    'r' => '\r',
+                    '0' => '\0',
+                    'a' => '\x07',
+                    'b' => '\x08',
+                    'v' => '\x0B',
+                    'f' => '\x0C',
+                    '\'' => '\'',
+                    '"' => '"',
+                    _ => {
+                        repr_error!("Unknown symbol after backslash: '{}'", c);
+                        ::std::process::exit(4);
+                    },
+                })
+            },
+        }
+    }
+    return result;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Format {
+    Vim,
+}
+
+
+#[derive(Debug, Clone)]
 struct Config {
-    input_file_name: String,
+    input_file_name: Option<String>,
     arguments: Vec<String>,
     starting_line_number: usize,
     starting_column_number: usize,
+    format: Format,
+    help: bool,
+    variable_name: String,
 }
 
 // cla = command-line arguments
@@ -56,81 +137,171 @@ fn parse_cla(program_name: String, mut args: ::std::env::Args) -> Config {
     }
 
     let mut result = Config {
-        input_file_name: String::from(""),
+        input_file_name: None,
         arguments: Vec::new(),
         starting_line_number: 1,
         starting_column_number: 1,
+        format: Format::Vim,
+        help: false,
+        variable_name: String::from("config"),
     };
+    enum CLAOptionWithArgument {
+        Format,
+        VariableName,
+    }
     enum State {
         #[allow(non_camel_case_types)] NONE,
-        #[allow(non_camel_case_types)] OPTION_ARGUMENT{option: String},
+        #[allow(non_camel_case_types)] OPTION_ARGUMENT{option: CLAOptionWithArgument},
     }
     let mut state = State::NONE;
-    match args.next() {
-        Some(arg) => {
-            result.input_file_name = arg;
-        }
-        None => {
-            error!("input file name not provided");
-            ::std::process::exit(1);
-        }
-    }
     while args.len() != 0 {
         let arg = args.next().unwrap();
         match state {
             State::NONE => {
-                enum State {
+                #[derive(Debug)]
+                enum ArgState {
                     #[allow(non_camel_case_types)] NONE,
                     #[allow(non_camel_case_types)] ARGUMENT{argument: String},
                     #[allow(non_camel_case_types)] SHORT_OPTIONS{options: Vec<String>},
-                    #[allow(non_camel_case_types)] LONG_OPTION{option: String},
                     #[allow(non_camel_case_types)] LONG_OPTION_WITH_OPTIONS{option: String, options: Vec<String>},
                 }
-                let mut state = State::NONE;
-                while arg.len() != 0 {
-                    let letter = arg.chars().next();
+                let mut arg_state = ArgState::NONE;
+                let mut arg = arg.chars();
+                loop {
+                    let letter = arg.next();
                     let letter = match letter {
                         Some(c) => c,
-                        None => {
-                            cla_parser_error!("Cannot get letter of a string");
-                            ::std::process::exit(2);
-                        }
+                        None => break,
                     };
-                    match state {
-                        State::NONE => {
+                    match arg_state {
+                        ArgState::NONE => {
                             if letter == '-' {
-                                state = State::SHORT_OPTIONS { options: Vec::new() };
+                                arg_state = ArgState::SHORT_OPTIONS { options: Vec::new() };
                                 continue;
                             }
-                            state = State::ARGUMENT { argument: String::from(letter) };
+                            arg_state = ArgState::ARGUMENT { argument: String::from(letter) };
                         },
-                        State::ARGUMENT { mut argument } => {
+                        ArgState::ARGUMENT { mut argument } => {
                             argument.push(letter);
-                            state = State::ARGUMENT { argument }
+                            arg_state = ArgState::ARGUMENT { argument }
                         }
-                        State::SHORT_OPTIONS { ref mut options } => {
+                        ArgState::SHORT_OPTIONS { ref mut options } => {
                             if letter == '-' {
-                                state = State::LONG_OPTION_WITH_OPTIONS { option: String::new(), options: options.to_vec() };
+                                arg_state = ArgState::LONG_OPTION_WITH_OPTIONS { option: String::new(), options: options.to_vec() };
                                 continue;
                             }
+                            options.push(letter.to_string());
+                            arg_state = ArgState::SHORT_OPTIONS { options: options.to_vec() };
                         },
-                        State::LONG_OPTION { mut option } => {
+                        ArgState::LONG_OPTION_WITH_OPTIONS { mut option, options } => {
                             option.push(letter);
-                            state = State::LONG_OPTION { option };
-                        },
-                        State::LONG_OPTION_WITH_OPTIONS { mut option, options } => {
-                            option.push(letter);
-                            state = State::LONG_OPTION_WITH_OPTIONS { option, options }
+                            arg_state = ArgState::LONG_OPTION_WITH_OPTIONS { option, options }
                         }
                     }
                 }
+                macro_rules! handle_short_options {
+                    ($options: expr) => {
+                        for option in $options {
+                            match option.as_str() {
+                                "h" => {
+                                    result.help = true;
+                                },
+                                "f" => {
+                                    state = State::OPTION_ARGUMENT {
+                                        option: CLAOptionWithArgument::Format,
+                                    };
+                                },
+                                "N" => {
+                                    state = State::OPTION_ARGUMENT {
+                                        option: CLAOptionWithArgument::VariableName,
+                                    };
+                                },
+                                _ => {
+                                    cla_parser_error!("Unknown short option");
+                                    ::std::process::exit(1);
+                                },
+                            }
+                        }
+                    };
+                }
+                match arg_state {
+                    ArgState::NONE => {
+                        unreachable!();
+                    },
+                    ArgState::ARGUMENT { argument } => {
+                        result.input_file_name = Some(argument);
+                    },
+                    ArgState::SHORT_OPTIONS { mut options } => {
+                        handle_short_options!(options);
+                    },
+                    ArgState::LONG_OPTION_WITH_OPTIONS { option, mut options } => {
+                        match option.as_str() {
+                            "format" => {
+                                state = State::OPTION_ARGUMENT { option: CLAOptionWithArgument::Format };
+                            },
+                            "help" => {
+                                result.help = true;
+                            }
+                            _ => {
+                                cla_parser_error!("Unknown long option");
+                                ::std::process::exit(1);
+                            }
+                        }
+                        handle_short_options!(options);
+                    },
+                }
             },
-            State::OPTION_ARGUMENT { option } => {
-                todo!();
+            State::OPTION_ARGUMENT { ref option } => {
+                match option {
+                    CLAOptionWithArgument::Format => {
+                        result.format = match arg.as_str() {
+                            "vim" => Format::Vim,
+                            _ => {
+                                cla_parser_error!("Unknown format: \"{}\"", arg);
+                                eprintln!();
+                                formats!();
+                                ::std::process::exit(1);
+                            },
+                        };
+                        state = State::NONE;
+                    },
+                    CLAOptionWithArgument::VariableName => {
+                        result.variable_name = arg;
+                    },
+                    _ => unreachable!(),
+                }
             },
         }
     }
     return result;
+}
+
+fn handle_cla(program_name: String, config: Config) {
+    #[allow(unused_macros)]
+    macro_rules! cla_handler_error {
+        ($($msg: expr),+) => {
+            error!("cla handler: {}", format!($($msg,)+));
+        };
+    }
+
+    #[allow(unused_macros)]
+    macro_rules! cla_handler_warning {
+        ($($msg: expr),+) => {
+            warning!("cla handler: {}", format!($($msg,)+));
+        };
+    }
+
+    if false
+        || config.help
+    {
+        help!(program_name);
+        ::std::process::exit(0);
+    }
+
+    if config.input_file_name.is_none() {
+        cla_handler_error!("No file name provided");
+        ::std::process::exit(1);
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -154,7 +325,7 @@ struct Tok {
     value: TokValue,
 }
 
-fn lex(program_name: String, config: Config, input: String) -> Vec<Tok> {
+fn lex(program_name: String, config: Config) -> Vec<Tok> {
     #[allow(unused_macros)]
     macro_rules! lexer_error {
         ($($msg: expr),+) => {
@@ -194,17 +365,31 @@ fn lex(program_name: String, config: Config, input: String) -> Vec<Tok> {
     }
     let mut state = State::IDENTIFIER;
     let mut result = Vec::new();
+    let input = match config.input_file_name {
+        Some(filename) => filename,
+        None => {
+            lexer_error!("No file name provided!");
+            ::std::process::exit(1);
+        },
+    };
     let mut loc = Loc {
-        filename: config.input_file_name.clone(),
+        filename: input.clone(),
         line_number: config.starting_line_number,
         column_number: config.starting_column_number - 1,
     };
     let mut prev_loc = Loc {
-        filename: config.input_file_name,
+        filename: input.clone(),
         line_number: config.starting_line_number,
         column_number: config.starting_column_number,
     };
     let mut current_text = String::new();
+    let input = match ::std::fs::read_to_string(input) {
+        Ok(string) => string,
+        Err(e) => {
+            lexer_error!("Cannot read file: {}", e);
+            ::std::process::exit(2);
+        }
+    };
     macro_rules! add_tok {
         () => {
             match state {
@@ -406,10 +591,21 @@ fn lex(program_name: String, config: Config, input: String) -> Vec<Tok> {
 #[derive(Debug)]
 enum Item {
     Text(String),
-    Item,
+    Item(Box<Item>),
 }
 
-fn generate_hashmap(program_name: String, config: Config) -> ::std::collections::HashMap<String, Item> {
+impl ToString for Item {
+    fn to_string(&self) -> String {
+        match self {
+            Item::Text(text) => text.to_string(),
+            Item::Item(item) => {
+                item.to_string()
+            },
+        }
+    }
+}
+
+fn generate_hashmap(program_name: String, lexed: Vec<Tok>, config: Config) -> ::std::collections::HashMap<String, Item> {
     #[allow(unused_macros)]
     macro_rules! generator_error {
         ($($msg: expr),+) => {
@@ -446,7 +642,11 @@ fn generate_hashmap(program_name: String, config: Config) -> ::std::collections:
         #[allow(non_camel_case_types)] ONE_LINE_COMMENT { line_number: usize, previous_state: Box<State> },
     }
     let mut state = State::KEY;
-    let input_file = match ::std::fs::read_to_string(config.input_file_name.clone()) {
+    if config.input_file_name.is_none() {
+        generator_error!("No file name provided!");
+        ::std::process::exit(1);
+    }
+    let input_file = match ::std::fs::read_to_string(config.input_file_name.clone().unwrap()) {
         Ok(text) => text,
         Err(e) => {
             generator_error!("Cannot read file: {}", e);
@@ -454,7 +654,6 @@ fn generate_hashmap(program_name: String, config: Config) -> ::std::collections:
         }
     };
     let mut result = ::std::collections::HashMap::<String, Item>::new();
-    let lexed = lex(program_name, config, input_file);
     eprintln!("{:#?}", lexed);
     for tok in lexed {
         eprintln!("{}: {}: {}: \"{:?}\"", tok.loc.filename, tok.loc.line_number, tok.loc.column_number, tok.value);
@@ -544,9 +743,42 @@ fn generate_hashmap(program_name: String, config: Config) -> ::std::collections:
     return result;
 }
 
-fn generate_output(program_name: String, hashmap: ::std::collections::HashMap<String, Item>) -> String {
+fn generate_output(program_name: String, hashmap: ::std::collections::HashMap<String, Item>, config: Config) -> String {
     eprintln!("hashmap: {:#?}", hashmap);
-    todo!();
+
+    #[allow(unused_macros)]
+    macro_rules! generator_error {
+        ($($msg: expr),+) => {
+            error!("output generator: {}", format!($($msg,)+));
+        };
+    }
+
+    #[allow(unused_macros)]
+    macro_rules! generator_warning {
+        ($($msg: expr),+) => {
+            warning!("output generator: {}", format!($($msg,)+));
+        };
+    }
+
+    let mut result = String::new();
+
+    match config.format {
+        Format::Vim => {
+            result += &format!("let g:{} = {{\n", config.variable_name);
+        },
+    }
+
+    for key in hashmap.keys() {
+        result += &format!("    '{}': \"{}\",\n", key, repr(&config, hashmap[key].to_string()));
+    }
+
+    match config.format {
+        Format::Vim => {
+            result += &format!("}}\n");
+        },
+    }
+
+    return result;
 }
 
 fn main() {
@@ -575,7 +807,10 @@ fn main() {
         ::std::process::exit(1);
     }
     let config = parse_cla(program_name.clone(), args);
-    let hashmap = generate_hashmap(program_name.clone(), config);
-    let output = generate_output(program_name, hashmap);
+    handle_cla(program_name.clone(), config.clone());
+    let lexed = lex(program_name.clone(), config.clone());
+    eprintln!("{:?}", config);
+    let hashmap = generate_hashmap(program_name.clone(), lexed, config.clone());
+    let output = generate_output(program_name, hashmap, config);
     println!("{}", output);
 }
