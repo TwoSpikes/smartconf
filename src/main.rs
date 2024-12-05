@@ -2,12 +2,27 @@ use core::prelude;
 
 const PROGRAM_NAME: &str = "smartconf";
 
-macro_rules! usage {
+macro_rules! short_usage {
     ($program_name: expr) => {
         eprintln!("Usage:");
         eprintln!("{}: [OPTION]... FILE", $program_name);
         eprintln!("{}: FILE [OPTION]...", $program_name);
         eprintln!("{}: FILE [OPTION]... -- [ARGUMENT]...", $program_name);
+    };
+}
+
+macro_rules! help_invitation {
+    ($program_name: expr) => {
+        eprintln!("For additional information, run:");
+        eprintln!("  {} --help", $program_name);
+    };
+}
+
+macro_rules! usage {
+    ($program_name: expr) => {
+        short_usage!($program_name);
+        eprintln!();
+        help_invitation!($program_name);
     };
 }
 
@@ -33,13 +48,26 @@ macro_rules! formats {
     };
 }
 
+macro_rules! errorcodes {
+    () => {
+        eprintln!("Error codes:");
+        eprintln!("0        Everything OK");
+        eprintln!("1        Command-line arguments error");
+        eprintln!("2        Filesystem error");
+        eprintln!("3        Syntax error");
+        eprintln!("4        Escaping error");
+    };
+}
+
 macro_rules! help {
     ($program_name: expr) => {
-        usage!($program_name);
+        short_usage!($program_name);
         eprintln!();
         options!();
         eprintln!();
         formats!();
+        eprintln!();
+        errorcodes!();
     };
 }
 
@@ -461,7 +489,7 @@ fn lex(program_name: String, config: Config) -> Vec<Tok> {
                         '"' => '"',
                         _ => {
                             lexer_loc_error!(loc, "Wrong escaping character");
-                            ::std::process::exit(3);
+                            ::std::process::exit(4);
                         },
                     };
                     current_text.push(c);
@@ -656,6 +684,7 @@ fn generate_hashmap(program_name: String, lexed: Vec<Tok>, config: Config) -> ::
         #[allow(non_camel_case_types)] COLON { key: String },
         #[allow(non_camel_case_types)] VALUE { key: String },
         #[allow(non_camel_case_types)] ONE_LINE_COMMENT { line_number: usize, previous_state: Box<State> },
+        #[allow(non_camel_case_types)] INCLUDE,
     }
     let mut state = State::KEY;
     if config.input_file_name.is_none() {
@@ -709,9 +738,16 @@ fn generate_hashmap(program_name: String, lexed: Vec<Tok>, config: Config) -> ::
                 State::KEY => {
                     match tok.value {
                         TokValue::IDENTIFIER {
-                            value: identifier,
+                            value,
                         } => {
-                            state = State::COLON { key: identifier };
+                            match value.as_str() {
+                                "include" => {
+                                    state = State::INCLUDE;
+                                },
+                                _ => {
+                                    state = State::COLON { key: value };
+                                },
+                            }
                         }
                         _ => {
                             generator_loc_error!(tok, "Expected identifier");
@@ -744,6 +780,32 @@ fn generate_hashmap(program_name: String, lexed: Vec<Tok>, config: Config) -> ::
                             quote_type: _,
                         } => {
                             result.insert(key.to_string(), Item::Text(text));
+                            state = State::KEY;
+                        },
+                        _ => {
+                            generator_loc_error!(tok, "Expected string");
+                            ::std::process::exit(3);
+                        }
+                    }
+                },
+                State::INCLUDE => {
+                    match tok.value {
+                        TokValue::STRING {
+                            value,
+                            quote_type: _,
+                        } => {
+                            let config = Config {
+                                input_file_name: Some(value),
+                                arguments: config.arguments.clone(),
+                                starting_column_number: config.starting_column_number,
+                                starting_line_number: config.starting_line_number,
+                                format: config.format,
+                                help: config.help,
+                                variable_name: config.variable_name.clone(),
+                            };
+                            let lexed = lex(program_name.clone(), config.clone());
+                            let hashmap = generate_hashmap(program_name.clone(), lexed, config);
+                            result.extend(hashmap.into_iter());
                             state = State::KEY;
                         },
                         _ => {
@@ -787,15 +849,24 @@ fn generate_output(program_name: String, hashmap: ::std::collections::HashMap<St
         },
     }
 
+    let mut count = hashmap.keys().count();
     for key in hashmap.keys() {
+        if count == 0 {
+            break;
+        }
         match config.format {
             Format::Vim => {
                 result += &format!("\\    '{}': \"{}\",\n", key, repr(&config, hashmap[key].to_string()));
             },
             Format::JSON => {
-                result += &format!("    \"{}\": \"{}\",\n", key, repr(&config, hashmap[key].to_string()));
+                result += &format!("    \"{}\": \"{}\"", key, repr(&config, hashmap[key].to_string()));
+                if count != 1 {
+                    result += ",";
+                }
+                result += "\n";
             },
         }
+        count -= 1;
     }
 
     match config.format {
