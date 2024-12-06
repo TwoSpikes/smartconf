@@ -356,8 +356,24 @@ struct Loc {
 }
 
 #[derive(Debug)]
+enum Number {
+    USIZE { value: usize },
+}
+
+impl ToString for Number {
+    fn to_string(&self) -> String {
+        match self {
+            Number::USIZE { value } => {
+                value.to_string()
+            },
+        }
+    }
+}
+
+#[derive(Debug)]
 enum TokValue {
     #[allow(non_camel_case_types)] IDENTIFIER { value: String },
+    #[allow(non_camel_case_types)] NUMBER { value: Number },
     #[allow(non_camel_case_types)] SPECCHAR { value: String },
     #[allow(non_camel_case_types)] STRING { value: String, quote_type: char },
     #[allow(non_camel_case_types)] ONE_LINE_COMMENT,
@@ -367,6 +383,59 @@ enum TokValue {
 struct Tok {
     loc: Loc,
     value: TokValue,
+}
+
+fn strtoi64_unsigned(x: &String) -> Option<i64> {
+    let mut res: u64 = 0;
+    for i in x.chars() {
+        res = res*10 + match i {
+            '0' => 0,
+            '1' => 1,
+            '2' => 2,
+            '3' => 3,
+            '4' => 4,
+            '5' => 5,
+            '6' => 6,
+            '7' => 7,
+            '8' => 8,
+            '9' => 9,
+            _ => return None,
+        };
+    }
+    return Some(res as i64 - 9223372036854775807);
+}
+
+fn str_to_usize(string: &str) -> Option<usize> {
+    let mut result: usize = 0;
+    for c in string.chars() {
+        result *= 10;
+        result += match c {
+            '0' => 0,
+            '1' => 1,
+            '2' => 2,
+            '3' => 3,
+            '4' => 4,
+            '5' => 5,
+            '6' => 6,
+            '7' => 7,
+            '8' => 8,
+            '9' => 9,
+            _ => return None,
+        };
+    }
+    return Some(result);
+}
+
+fn str_to_num(string: &str) -> Option<Number> {
+    let value = match str_to_usize(string) {
+        Some(value) => value,
+        None => {
+            return None;
+        },
+    };
+    return Some(Number::USIZE {
+        value,
+    });
 }
 
 fn lex(program_name: String, config: Config) -> Vec<Tok> {
@@ -401,6 +470,7 @@ fn lex(program_name: String, config: Config) -> Vec<Tok> {
     #[derive(Debug)]
     enum State {
         IDENTIFIER,
+        NUMBER,
         SPECCHAR,
         STRING { quote_type: char, escaping: bool },
         NOP,
@@ -453,6 +523,18 @@ fn lex(program_name: String, config: Config) -> Vec<Tok> {
                         State::IDENTIFIER => {
                             TokValue::IDENTIFIER {
                                 value: current_text.clone(),
+                            }
+                        },
+                        State::NUMBER => {
+                            let value = match str_to_num(&current_text) {
+                                Some(value) => value,
+                                None => {
+                                    lexer_loc_error!(loc, "Unable to parse number: `{}`", current_text);
+                                    ::std::process::exit(3);
+                                },
+                            };
+                            TokValue::NUMBER {
+                                value,
                             }
                         },
                         State::STRING { quote_type, escaping } => {
@@ -549,28 +631,37 @@ fn lex(program_name: String, config: Config) -> Vec<Tok> {
             continue;
         }
         loc.column_number += 1;
+        let ciad = c.is_ascii_digit();
         if false
             || c.is_lowercase()
             || c.is_uppercase()
-            || c.is_ascii_digit()
+            || ciad
             || c == '-'
             || c == '_'
         {
-            if !matches!(state, State::IDENTIFIER) {
-                if !current_text.is_empty() {
-                    eprintln!("{}: {}: ({}: {}): adding identifier: \"{}\"", loc.line_number, loc.column_number, prev_loc.line_number, prev_loc.column_number, current_text);
-                    let tok = add_tok!();
-                    current_text = String::new();
-                    match tok {
-                        Some(tok) => {
-                            result.push(tok);
+            match state {
+                State::IDENTIFIER => {},
+                State::NUMBER => {},
+                _ => {
+                    if !current_text.is_empty() {
+                        eprintln!("{}: {}: ({}: {}): adding identifier: \"{}\"", loc.line_number, loc.column_number, prev_loc.line_number, prev_loc.column_number, current_text);
+                        let tok = add_tok!();
+                        current_text = String::new();
+                        match tok {
+                            Some(tok) => {
+                                result.push(tok);
+                            }
+                            None => {},
                         }
-                        None => {},
                     }
-                }
-                prev_loc = loc.clone();
+                    prev_loc = loc.clone();
+                },
             }
-            state = State::IDENTIFIER;
+            if ciad {
+                state = State::NUMBER;
+            } else {
+                state = State::IDENTIFIER;
+            }
             current_text.push(c);
             continue;
         }
@@ -635,6 +726,7 @@ fn lex(program_name: String, config: Config) -> Vec<Tok> {
 #[derive(Debug)]
 enum Item {
     Text(String),
+    Number(Number),
     Item(Box<Item>),
 }
 
@@ -642,6 +734,9 @@ impl ToString for Item {
     fn to_string(&self) -> String {
         match self {
             Item::Text(text) => text.to_string(),
+            Item::Number(number) => {
+                number.to_string()
+            },
             Item::Item(item) => {
                 item.to_string()
             },
@@ -782,6 +877,10 @@ fn generate_hashmap(program_name: String, lexed: Vec<Tok>, config: Config) -> ::
                             result.insert(key.to_string(), Item::Text(text));
                             state = State::KEY;
                         },
+                        TokValue::NUMBER { value } => {
+                            result.insert(key.to_string(), Item::Number(value));
+                            state = State::KEY;
+                        },
                         _ => {
                             generator_loc_error!(tok, "Expected string");
                             ::std::process::exit(3);
@@ -854,12 +953,26 @@ fn generate_output(program_name: String, hashmap: ::std::collections::HashMap<St
         if count == 0 {
             break;
         }
+        let value = match &hashmap[key] {
+            Item::Text(text) => {
+                let mut value = String::from("\"");
+                value += &text.to_string();
+                value += "\"";
+                value
+            },
+            Item::Number(number) => {
+                number.to_string()
+            },
+            Item::Item(item) => {
+                item.to_string()
+            },
+        };
         match config.format {
             Format::Vim => {
-                result += &format!("\\    '{}': \"{}\",\n", key, repr(&config, hashmap[key].to_string()));
+                result += &format!("\\    '{}': {},\n", key, repr(&config, value));
             },
             Format::JSON => {
-                result += &format!("    \"{}\": \"{}\"", key, repr(&config, hashmap[key].to_string()));
+                result += &format!("    \"{}\": {}", key, repr(&config, value));
                 if count != 1 {
                     result += ",";
                 }
