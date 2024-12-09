@@ -374,6 +374,7 @@ impl ToString for Number {
 enum TokValue {
     #[allow(non_camel_case_types)] IDENTIFIER { value: String },
     #[allow(non_camel_case_types)] NUMBER { value: Number },
+    #[allow(non_camel_case_types)] BOOLEAN { value: bool },
     #[allow(non_camel_case_types)] SPECCHAR { value: String },
     #[allow(non_camel_case_types)] STRING { value: String, quote_type: char },
     #[allow(non_camel_case_types)] ONE_LINE_COMMENT,
@@ -383,26 +384,6 @@ enum TokValue {
 struct Tok {
     loc: Loc,
     value: TokValue,
-}
-
-fn strtoi64_unsigned(x: &String) -> Option<i64> {
-    let mut res: u64 = 0;
-    for i in x.chars() {
-        res = res*10 + match i {
-            '0' => 0,
-            '1' => 1,
-            '2' => 2,
-            '3' => 3,
-            '4' => 4,
-            '5' => 5,
-            '6' => 6,
-            '7' => 7,
-            '8' => 8,
-            '9' => 9,
-            _ => return None,
-        };
-    }
-    return Some(res as i64 - 9223372036854775807);
 }
 
 fn str_to_usize(string: &str) -> Option<usize> {
@@ -521,9 +502,24 @@ fn lex(program_name: String, config: Config) -> Vec<Tok> {
                             }
                         },
                         State::IDENTIFIER => {
-                            TokValue::IDENTIFIER {
-                                value: current_text.clone(),
+                            match current_text.as_str() {
+                                "false" => {
+                                    TokValue::BOOLEAN {
+                                        value: false,
+                                    }
+                                },
+                                "true" => {
+                                    TokValue::BOOLEAN {
+                                        value: true,
+                                    }
+                                },
+                                _ => {
+                                    TokValue::IDENTIFIER {
+                                        value: current_text.clone(),
+                                    }
+                                },
                             }
+
                         },
                         State::NUMBER => {
                             let value = match str_to_num(&current_text) {
@@ -727,6 +723,7 @@ fn lex(program_name: String, config: Config) -> Vec<Tok> {
 enum Item {
     Text(String),
     Number(Number),
+    Boolean(bool),
     Item(Box<Item>),
 }
 
@@ -736,6 +733,9 @@ impl ToString for Item {
             Item::Text(text) => text.to_string(),
             Item::Number(number) => {
                 number.to_string()
+            },
+            Item::Boolean(value) => {
+                value.to_string()
             },
             Item::Item(item) => {
                 item.to_string()
@@ -881,6 +881,10 @@ fn generate_hashmap(program_name: String, lexed: Vec<Tok>, config: Config) -> ::
                             result.insert(key.to_string(), Item::Number(value));
                             state = State::KEY;
                         },
+                        TokValue::BOOLEAN { value } => {
+                            result.insert(key.to_string(), Item::Boolean(value));
+                            state = State::KEY;
+                        },
                         _ => {
                             generator_loc_error!(tok, "Expected string");
                             ::std::process::exit(3);
@@ -962,6 +966,9 @@ fn generate_output(program_name: String, hashmap: ::std::collections::HashMap<St
             },
             Item::Number(number) => {
                 number.to_string()
+            },
+            Item::Boolean(value) => {
+                value.to_string()
             },
             Item::Item(item) => {
                 item.to_string()
